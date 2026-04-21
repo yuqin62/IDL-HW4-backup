@@ -34,12 +34,12 @@ class ASRTrainer(BaseTrainer):
     Implementation Notes:
     1. For __init__:
         - Initialize CrossEntropyLoss with appropriate padding index and label smoothing
-        - Initialize CTCLoss if ctc_weight > 0
+        - Initialize CTCLoss if ctc_weight > 0 (blank index = tokenizer.blank_id, not pad_id)
         
     2. For _train_epoch:
         - Unpack the batch (features, shifted targets, golden targets, lengths)
         - Get model predictions, attention weights and CTC inputs
-        - Calculate CE loss and CTC loss if enabled
+        - Calculate CE loss and CTC loss if enabled (CTC: blank_id; 1D packed targets without padded tail)
         - Backpropagate the loss
         
     3. For _validate_epoch:
@@ -68,7 +68,7 @@ class ASRTrainer(BaseTrainer):
         )
         
         # TODO: Initialize CTC loss if needed
-        # You can use the pad token id as the blank index
+        # CTC blank index must match the model's blank class (tokenizer [BLANK]), not the PAD token.
         self.ctc_criterion = None
         self.ctc_weight = self.config['loss'].get('ctc_weight', 0.0)
         if self.ctc_weight > 0:
@@ -126,11 +126,19 @@ class ASRTrainer(BaseTrainer):
                 
                 # TODO: Calculate CTC loss if needed
                 if self.ctc_weight > 0:
+                    # CTCLoss expects 1D targets = concat of per-utterance labels (no padded tail).
+                    packed_targets = torch.cat(
+                        [
+                            targets_golden[b, : transcript_lengths[b]]
+                            for b in range(targets_golden.size(0))
+                        ],
+                        dim=0,
+                    )
                     ctc_loss = self.ctc_criterion(
                         ctc_inputs['log_probs'],
-                        targets_golden,
+                        packed_targets,
                         ctc_inputs['lengths'],
-                        transcript_lengths
+                        transcript_lengths,
                     )
                     loss = ce_loss + self.ctc_weight * ctc_loss
                 else:
